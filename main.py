@@ -1,6 +1,7 @@
 import math
-import math
 from scipy.stats import norm
+import numpy as np
+import matplotlib.pyplot as plt
 
 # Parameters
 S0 = 100      # spot stock price
@@ -12,49 +13,88 @@ N = 1000      # number of steps
 
 option_type = 'call'
 
-time_to_maturity = T
-
-
 # Precompute constants
 dt = T/N                           # delta t
 u = math.exp(v*math.sqrt(dt))       # up factor
 d = 1/u                             # down factor
 p = (math.exp(r*dt) - d) / (u - d)  # risk neutral probability
 
-def binomial_tree(S0, K, T, r, v, N, option_type='call'):
-    # Initialize the end nodes of the tree
+time_to_maturity_range = np.linspace(0.1, 1, 10)
+volatility_range = np.linspace(0.1, 0.5, 10)
+
+
+def binomial_tree(S0, K, T, r, v, N, option_type='call', dividend=0.0, div_dates=[], div_amounts=[]):
+    dt = T / N
+    u = math.exp((v * math.sqrt(dt)))  # Up factor
+    d = 1 / u  # Down factor
+
+    # Calculate risk-neutral probability without dividends
+    p = (math.exp(r * dt) - d) / (u - d)
+
+    # Calculate option prices at the end nodes of the binomial tree
     end_nodes = [S0 * u**j * d**(N - j) for j in range(N + 1)]
-    
-    # Calculate option prices
     if option_type == 'call':
         option_prices = [max(0, S - K) for S in end_nodes]
     else:
         option_prices = [max(0, K - S) for S in end_nodes]
-    
-    # Move to earlier times
-    for i in range(N - 1, -1, -1):
-        option_prices = [(p * option_prices[j + 1] + (1 - p) * option_prices[j]) * math.exp(-r * dt)
-                         for j in range(i + 1)]
+
+    # Calculate adjusted option prices for dividend-paying assets
+    if dividend > 0 and len(div_dates) == len(div_amounts) > 0:
+        for i in range(N - 1, -1, -1):
+            for j in range(i + 1):
+                div_adjustment = 1.0
+                for div_date, div_amount in zip(div_dates, div_amounts):
+                    if div_date * T <= j * dt:
+                        div_adjustment *= (1 - div_amount / (end_nodes[j] * (1 - dividend)))  # Adjusted stock price
+                option_prices[j] = (p * option_prices[j + 1] + (1 - p) * option_prices[j]) * math.exp(-r * dt) * div_adjustment
+
+    else:
+        # Calculate option prices at earlier nodes using backward induction
+        for i in range(N - 1, -1, -1):
+            for j in range(i + 1):
+                option_prices[j] = (p * option_prices[j + 1] + (1 - p) * option_prices[j]) * math.exp(-r * dt)
+
     return option_prices[0]
+
+
+def calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
+    d1 = (math.log(stock_price / strike_price) + (risk_free_rate + (volatility ** 2) / 2) * time_to_maturity) / (volatility * math.sqrt(time_to_maturity))
+    return d1
+
+def calculate_d2(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
+    d1 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
+    d2 = d1 - volatility * math.sqrt(time_to_maturity)
+    return d2
 
 def calculate_delta(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity, option_type):
     d1 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
     if option_type == 'call':
-        delta = math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(d1)
+        delta = norm.cdf(d1)
     elif option_type == 'put':
-        delta = math.exp(-risk_free_rate * time_to_maturity) * (norm.cdf(d1) - 1)
+        delta = -norm.cdf(-d1)
     else:
         raise ValueError("Invalid option type. Choose 'call' or 'put'.")
     return delta
 
+def calculate_theta(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity, option_price, option_type):
+    d1 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
+    d2 = calculate_d2(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
+    if option_type == 'call':
+        theta = -(stock_price * norm.pdf(d1) * volatility / (2 * math.sqrt(time_to_maturity))) - (risk_free_rate * strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(d2))
+    elif option_type == 'put':
+        theta = -(stock_price * norm.pdf(d1) * volatility / (2 * math.sqrt(time_to_maturity))) + (risk_free_rate * strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(-d2))
+    else:
+        raise ValueError("Invalid option type. Choose 'call' or 'put'.")
+    return theta
+
 def calculate_gamma(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
     d1 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
-    gamma = (math.exp(-risk_free_rate * time_to_maturity) * norm.pdf(d1)) / (stock_price * volatility * math.sqrt(time_to_maturity))
+    gamma = norm.pdf(d1) / (stock_price * volatility * math.sqrt(time_to_maturity))
     return gamma
 
 def calculate_vega(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
     d1 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity)
-    vega = stock_price * math.exp(-risk_free_rate * time_to_maturity) * norm.pdf(d1) * math.sqrt(time_to_maturity)
+    vega = stock_price * norm.pdf(d1) * math.sqrt(time_to_maturity)
     return vega
 
 def calculate_rho(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity, option_type):
@@ -68,64 +108,93 @@ def calculate_rho(stock_price, strike_price, risk_free_rate, volatility, time_to
     return rho
 
 def calculate_implied_volatility(stock_price, strike_price, risk_free_rate, option_price, time_to_maturity, option_type):
-    implied_volatility = 0.5  # Initial guess for implied volatility
+    implied_volatility = 0.5  
     MAX_ITERATIONS = 100
     PRECISION = 1e-5
 
     for i in range(MAX_ITERATIONS):
         d1 = calculate_d1(stock_price, strike_price, risk_free_rate, implied_volatility, time_to_maturity)
+        d2 = calculate_d2(stock_price, strike_price, risk_free_rate, implied_volatility, time_to_maturity)
         if option_type == 'call':
-            option_price_calculated = stock_price * norm.cdf(d1) - strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(d1 - implied_volatility * math.sqrt(time_to_maturity))
+            option_price_calculated = stock_price * norm.cdf(d1) - strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(d2)
         elif option_type == 'put':
-            option_price_calculated = strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(-d1 + implied_volatility * math.sqrt(time_to_maturity)) - stock_price * norm.cdf(-d1)
+            option_price_calculated = strike_price * math.exp(-risk_free_rate * time_to_maturity) * norm.cdf(-d2) - stock_price * norm.cdf(-d1)
         else:
             raise ValueError("Invalid option type. Choose 'call' or 'put'.")
-        
-        diff = option_price_calculated - option_price
 
-        if abs(diff) < PRECISION:
-            break
-
+        option_price_difference = option_price_calculated - option_price  
+        if abs(option_price_difference) < PRECISION:
+            return implied_volatility
         vega = calculate_vega(stock_price, strike_price, risk_free_rate, implied_volatility, time_to_maturity)
-        implied_volatility -= diff / vega
-
+        implied_volatility -= option_price_difference / vega  
     return implied_volatility
 
-def calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
-    d1 = (math.log(stock_price / strike_price) + (risk_free_rate + (volatility ** 2) / 2) * time_to_maturity) / (volatility * math.sqrt(time_to_maturity))
-    return d1
+def plot_delta_vs_theta(stock_price, strike_price, risk_free_rate, volatility_range, time_to_maturity, option_type):
+    deltas = []
+    thetas = []
+    for v in volatility_range:
+        option_price = binomial_tree(stock_price, strike_price, time_to_maturity, risk_free_rate, v, N, option_type)
+        delta = calculate_delta(stock_price, strike_price, risk_free_rate, v, time_to_maturity, option_type)
+        theta = calculate_theta(stock_price, strike_price, risk_free_rate, v, time_to_maturity, option_price, option_type)
+        deltas.append(delta)
+        thetas.append(theta)
+    plt.plot(deltas, thetas)
+    plt.xlabel('Delta')
+    plt.ylabel('Theta')
+    plt.title('Delta vs Theta')
+    plt.show()
 
-def calculate_d2(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity):
-    d2 = calculate_d1(stock_price, strike_price, risk_free_rate, volatility, time_to_maturity) - volatility * math.sqrt(time_to_maturity)
-    return d2
+def plot_theta_vs_vega(stock_price, strike_price, risk_free_rate, volatility_range, time_to_maturity, option_type):
+    thetas = []
+    vegas = []
+    for v in volatility_range:
+        option_price = binomial_tree(stock_price, strike_price, time_to_maturity, risk_free_rate, v, N, option_type)
+        theta = calculate_theta(stock_price, strike_price, risk_free_rate, v, time_to_maturity, option_price, option_type)
+        vega = calculate_vega(stock_price, strike_price, risk_free_rate, v, time_to_maturity)
+        thetas.append(theta)
+        vegas.append(vega)
+    plt.plot(thetas, vegas)
+    plt.xlabel('Theta')
+    plt.ylabel('Vega')
+    plt.title('Theta vs Vega')
+    plt.show()
 
+def main():
+    call_price = binomial_tree(S0, K, T, r, v, N, option_type='call')
+    put_price = binomial_tree(S0, K, T, r, v, N, option_type='put')
 
-call_price = binomial_tree(S0, K, T, r, v, N, option_type='call')
-put_price = binomial_tree(S0, K, T, r, v, N, option_type='put')
+    d1 = calculate_d1(S0, K, r, v, T)
+    d2 = calculate_d2(S0, K, r, v, T)
 
-d1 = calculate_d1(S0, K, r, v, time_to_maturity)
-d2 = calculate_d2(S0, K, r, v, time_to_maturity)
+    if option_type == 'call':
+        option_price = S0 * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+    elif option_type == 'put':
+        option_price = K * math.exp(-r * T) * norm.cdf(-d2) - S0 * norm.cdf(-d1)
+    else:
+        raise ValueError("Invalid option type. Choose 'call' or 'put'.")
 
-if option_type == 'call':
-    option_price = S0 * norm.cdf(d1) - K * math.exp(-r * time_to_maturity) * norm.cdf(d2)
-elif option_type == 'put':
-    option_price = K * math.exp(-r * time_to_maturity) * norm.cdf(-d2) - S0 * norm.cdf(-d1)
-else:
-    raise ValueError("Invalid option type. Choose 'call' or 'put'.")
+    # Calculate option greeks
+    delta = calculate_delta(S0, K, r, v, T, option_type)
+    gamma = calculate_gamma(S0, K, r, v, T)
+    vega = calculate_vega(S0, K, r, v, T)
+    rho = calculate_rho(S0, K, r, v, T, option_type)
+    implied_volatility = calculate_implied_volatility(S0, K, r, option_price, T, option_type)
 
-# Calculate option greeks
-delta = calculate_delta(S0, K, r, v, time_to_maturity, option_type)
-gamma = calculate_gamma(S0, K, r, v, time_to_maturity)
-vega = calculate_vega(S0, K, r, v, time_to_maturity)
-rho = calculate_rho(S0, K, r, v, time_to_maturity, option_type)
-implied_volatility = calculate_implied_volatility(S0, K, r, option_price, time_to_maturity, option_type)
+    option_price = binomial_tree(S0=100, K=105, T=1, r=0.05, v=0.2, N=100, option_type='call', dividend=0.03, div_dates=[0.5], div_amounts=[2.0])
+    print("European call with dividents: ", option_price)
 
-print("European call option price: ", round(call_price, 2))
-print("European put option price: ", round(put_price, 2))
+    print("European call option price: ", round(call_price, 2))
+    print("European put option price: ", round(put_price, 2))
 
-print("European", option_type, "option price:", option_price)
-print("European", option_type, "delta value:", delta)
-print("European option gamma value:", gamma)
-print("European option vega value:", vega)
-print("European", option_type, "option rho value:", rho)
-print("European", option_type, "option implied volatility value:", implied_volatility)
+    print("European", option_type, "option price:", option_price)
+    print("European", option_type, "delta value:", delta)
+    print("European option gamma value:", gamma)
+    print("European option vega value:", vega)
+    print("European", option_type, "option rho value:", rho)
+    print("European", option_type, "option implied volatility value:", implied_volatility)
+
+    plot_delta_vs_theta(S0, K, r, volatility_range, T, option_type)
+    plot_theta_vs_vega(S0, K, r, volatility_range, T, option_type)
+
+if __name__ == "__main__":
+    main()
